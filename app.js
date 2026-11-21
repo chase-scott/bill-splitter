@@ -696,7 +696,10 @@ const ICONS = {
   barcode: '<path d="M3 5v14"/><path d="M8 5v14"/><path d="M12 5v14"/><path d="M17 5v14"/><path d="M21 5v14"/>',
   copy: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+  trash:
+    '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
   alert: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
+  idle: '<circle cx="12" cy="12" r="9" stroke-width="3.5" stroke-dasharray="0.01 6.28"/>',
   found: '<circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
   missing: '<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6"/><path d="m15 9-6 6"/>',
   chevron: '<path d="m6 9 6 6 6-6"/>',
@@ -746,7 +749,7 @@ function productHtml(item, mode) {
     if (product) return `<span class="lookup found" title="${name}">${icon("found", 16)}</span>`;
     if (item.offs === "none")
       return `<span class="lookup missing" title="Not in Open Food Facts">${icon("missing", 16)}</span>`;
-    return "";
+    return `<span class="lookup idle" title="Not looked up yet">${icon("idle", 16)}</span>`;
   }
 
   if (mode === "slip") {
@@ -835,7 +838,9 @@ function renderHeader() {
   byId("header-action").innerHTML =
     state.step === 4
       ? `<button class="icon-button" id="copy-summary" aria-label="Copy summary" title="Copy summary">${icon("copy", 20)}</button>`
-      : "";
+      : state.step === 1
+        ? menuHtml()
+        : "";
 }
 
 function render() {
@@ -848,6 +853,7 @@ function render() {
 
 function goToStep(step) {
   cancelAdvance();
+  menuOpen = false;
   state.step = step;
   saveState();
   render();
@@ -871,18 +877,24 @@ function receiptFooter(receipt) {
       ${line("Subtotal", subtotal, printedSubtotal)}
       ${line("Tax", tax, printedTax, " tax")}
       ${line("Total", subtotal + tax, null, " sum")}
-    </div>
-    <div class="footer-actions"><span class="muted">${plural(receipt.items.length, "item")}</span><span class="spacer"></span><button class="dashed" data-add-item="${receipt.id}">${icon("plus")}Add item</button></div>`;
+    </div>`;
 }
 
-let keyOpen = false;
+let menuOpen = false;
 
-function keyPanelHtml() {
-  if (!keyOpen && canReadPhotos()) return "";
-  return `<div class="key-panel">
-    <label for="gemini-key">Google AI Studio API key</label>
-    <input id="gemini-key" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your key" value="${escapeHtml(settings.key)}">
-    <p class="small muted">${canReadPhotos() ? "" : "Needed to read receipt photos. Without it, enter items by hand. "}Get a free key at aistudio.google.com/apikey. It's stored only in this browser. Receipt photos are sent to Google, and on the free tier Google may use them to improve its products.</p>
+function menuHtml() {
+  const toggle = `<button class="icon-button camera-button${canReadPhotos() ? "" : " needs-key"}" id="toggle-menu" aria-label="Add receipt photos" aria-haspopup="dialog" aria-expanded="${menuOpen}">${icon("camera", 20)}</button>`;
+  if (!menuOpen) return toggle;
+  return `${toggle}<div class="popover" role="dialog" aria-label="Add receipt photos">
+    <label class="pop-add" id="dropzone">
+      <input type="file" id="file" accept="image/*" multiple>
+      ${icon("camera", 18)}<b>Add receipt photos</b>
+    </label>
+    <div class="pop-key">
+      <label for="gemini-key">${icon("sparkle", 12)}Google AI Studio API key</label>
+      <input id="gemini-key" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your key" value="${escapeHtml(settings.key)}">
+      <p class="small muted">${canReadPhotos() ? "" : "Needed to read receipt photos. Without it, enter items by hand. "}Get a free key at aistudio.google.com/apikey. It's stored only in this browser. Receipt photos are sent to Google, and on the free tier Google may use them to improve its products.</p>
+    </div>
   </div>`;
 }
 
@@ -890,7 +902,7 @@ function photoHtml(photo) {
   const failed = photo.status === "error";
   const title = {
     new: "Not read yet",
-    reading: '<span class="spinner"></span>Reading',
+    reading: 'Reading<span class="dots" aria-hidden="true"><i>.</i><i>.</i><i>.</i></span>',
     done: "Read",
   }[photo.status];
 
@@ -901,7 +913,7 @@ function photoHtml(photo) {
       ${failed && photo.hint ? `<div class="photo-hint">${escapeHtml(photo.hint)}</div>` : ""}
     </div>
     ${failed ? `<button class="link" data-retry="${photo.id}" ${reading ? "disabled" : ""}>Retry</button>` : ""}
-    ${photo.status !== "reading" ? `<button class="remove" data-remove-photo="${photo.id}" aria-label="Remove photo">${icon("x")}</button>` : ""}
+    ${photo.status !== "reading" ? `<button class="remove" data-remove-photo="${photo.id}" aria-label="Remove photo">${icon("x")}</button>` : '<span class="spinner big" role="status" aria-label="Reading"></span>'}
   </div>`;
 }
 
@@ -921,8 +933,7 @@ function itemRowHtml(item) {
       <button class="remove" data-remove-item="${item.id}" aria-label="Remove item">${icon("x")}</button>
     </div>
     <div class="item-meta">
-      ${icon("barcode", 14)}
-      <input class="item-code num" data-field="code" inputmode="numeric" placeholder="Product code" value="${escapeHtml(item.code || "")}" aria-label="Product code">
+      <label class="code-wrap">${icon("barcode", 12)}<input class="item-code num" data-field="code" inputmode="numeric" placeholder="Product code" value="${escapeHtml(item.code || "")}" aria-label="Product code"></label>
       ${taxChipHtml(item)}
     </div>
   </div>`;
@@ -931,8 +942,9 @@ function itemRowHtml(item) {
 function receiptHtml(receipt) {
   return `<div class="receipt-wrap"><div class="receipt" data-receipt="${receipt.id}">
     <div class="receipt-header">
+      <button class="header-icon add-item-btn" data-add-item="${receipt.id}" aria-label="Add item" title="Add item">${icon("plus", 18)}</button>
       <input data-receipt-name value="${escapeHtml(receipt.name)}" aria-label="Store">
-      <button class="link quiet" data-remove-receipt="${receipt.id}">Remove</button>
+      <button class="remove-receipt" data-remove-receipt="${receipt.id}" aria-label="Remove receipt" title="Remove receipt">${icon("trash", 18)}</button>
     </div>
     ${receipt.items.map(itemRowHtml).join("")}
     <div class="receipt-footer" id="receipt-footer-${receipt.id}">${receiptFooter(receipt)}</div>
@@ -943,33 +955,22 @@ function receiptsView() {
   const itemCount = allItems().length;
   const unread = photos.filter((p) => p.status === "new" || p.status === "error").length;
 
-  const keyLabel = canReadPhotos() ? "Gemini key" : "Add a Gemini key";
-  let html = `<div class="add-row">
-    <label class="dropzone" id="dropzone">
-      <input type="file" id="file" accept="image/*" multiple>
-      ${icon("camera", 18)}
-      <b>Add receipt photos</b>
-    </label>
-    <button class="key-button${canReadPhotos() ? "" : " needs-key"}${keyOpen ? " on" : ""}" id="toggle-key" aria-label="${keyLabel}" title="${keyLabel}" aria-expanded="${keyOpen || !canReadPhotos()}">${icon("sparkle", 14)}<span>Gemini</span></button>
-  </div>`;
-
-  html += keyPanelHtml();
+  let html = "";
   if (photos.length) html += `<div class="photos">${photos.map(photoHtml).join("")}</div>`;
 
   if (unread && canReadPhotos()) {
     html += `<div class="row spaced">
-      <button class="primary" id="read-all" ${reading ? "disabled" : ""}>${reading ? "Reading" : `Read ${plural(unread, "receipt")}`}</button>
-      <span class="muted small">Check what it finds against the paper receipt</span>
-    </div>`;
+      <button class="primary" id="read-all" ${reading ? "disabled" : ""}>${reading ? 'Reading<span class="dots" aria-hidden="true"><i>.</i><i>.</i><i>.</i></span>' : `Read ${plural(unread, "receipt")}`}</button>    </div>`;
   }
 
   if (state.receipts.length) {
-    html += `<div class="section-head"><h2>Items</h2><span class="muted small" id="lookup-status">${escapeHtml(lookup.message)}</span></div>`;
+    html += `<div class="section-head"><span class="muted small" id="lookup-status">${escapeHtml(lookup.message)}</span></div>`;
     html += state.receipts.map(receiptHtml).join("");
   }
 
-  html += `<p class="small muted center">No photo? <button class="link" id="add-manual">Enter a receipt by hand</button>${state.receipts.length ? ' · <button id="start-over" class="link quiet">Start over</button>' : ""}</p>`;
+  html += `<p class="small muted center">No photo? <button class="link" id="add-manual">Enter a receipt by hand</button></p>`;
   html += `<div class="footer-bar">
+    ${state.receipts.length ? '<button class="start-over-btn" id="start-over">Start over</button>' : ""}
     <button class="primary" data-go="2" ${itemCount ? "" : "disabled"}>Split ${plural(itemCount, "item")}</button>
   </div>`;
   return html;
@@ -1000,7 +1001,7 @@ function slipShareHtml(item, animate) {
     ).join("");
     return `<span id="custom-bar">${shareBar(null, "thick")}</span>
       <div class="custom-split">${rows}</div>
-      <div class="custom-hint" id="custom-hint">Leave a box empty to share what's left</div>`;
+      <div class="custom-hint" id="custom-hint"></div>`;
   }
 
   const shares = splitCents(price, percents);
@@ -1069,11 +1070,9 @@ function splitView() {
         <div class="slip-header"><span>${escapeHtml(item.receipt.name)}</span><span>${position(state.cur + 1)}/${position(items.length)}</span></div>
         <div data-product="${item.id}" data-mode="slip">${productHtml(item, "slip")}</div>
         <div class="slip-share">${slipShareHtml(item, animate)}</div>
+        ${presetsHtml}
       </div>
     </div>
-
-    ${presetsHtml}
-
     <div class="item-nav">
       <button data-move="-1" ${state.cur ? "" : "disabled"} aria-label="Previous item">${icon("left")}</button>
       ${customButton}
@@ -1123,8 +1122,8 @@ function updateCustomSplit() {
   byId("custom-bar").innerHTML = shareBar(custom.valid ? custom.percents : null, "thick");
   const used = Math.round(custom.used * 100) / 100;
   byId("custom-hint").innerHTML = custom.valid
-    ? "Leave a box empty to share what's left"
-    : `<span class="bad">${custom.blanks ? `That's ${used}%, over 100%` : `Adds up to ${used}%, needs 100%`}</span>`;
+    ? ""
+    :`<span class="bad">${custom.blanks ? `That's ${used}%, over 100%` : `Adds up to ${used}%, needs 100%`}</span>`;
 
   const save = byId("save-custom");
   if (save) save.disabled = !custom.valid;
@@ -1134,11 +1133,12 @@ function chooseSplit(percents) {
   if (split.advancing) return;
   const items = allItems();
   const [, item] = findItem(items[state.cur].id);
+  const firstChoice = !item.pct;
   item.pct = percents;
   split.customOpen = false;
   saveState();
 
-  split.justChosen = true;
+  split.justChosen = firstChoice;
   render();
   split.advancing = true;
 
@@ -1266,7 +1266,7 @@ function summaryView() {
     const balance = t.balance[i];
     const standing =
       paidTotal && balance
-        ? `<div class="detail-row"><span>Balance</span><span class="${balance > 0 ? "positive" : "negative"}">${balance > 0 ? "Gets back" : "Owes"} ${formatMoney(Math.abs(balance))}</span></div>`
+        ? `<div class="detail-balance ${balance > 0 ? "positive" : "negative"}"><span>${balance > 0 ? "Gets back" : "Owes"}</span><b class="num">${formatMoney(Math.abs(balance))}</b></div>`
         : "";
     const lines = items
       .filter((item) => item.pct && item.pct[i] > 0)
@@ -1288,10 +1288,11 @@ function summaryView() {
       ${lines ? `<div class="person-items">${lines}</div>` : '<p class="small muted person-empty">Nothing split to them yet</p>'}
       <details class="bill-details">
         <summary><span>Bill Details</span><span class="chevron">${icon("chevron", 16)}</span></summary>
-        <div class="detail-row"><span>Items</span><span class="num">${formatMoney(t.subtotal[i])}</span></div>
-        <div class="detail-row tax"><span>Tax</span><span class="num">${formatMoney(t.tax[i])}</span></div>
-        <div class="detail-row sum"><span>Total</span><span class="num">${formatMoney(t.owes[i])}</span></div>
-        <div class="detail-row"><span>Paid</span><span class="num">${formatMoney(t.paid[i])}</span></div>
+        <div class="detail-stats">
+          <div><span>Items</span><b class="num">${formatMoney(t.subtotal[i])}</b></div>
+          <div class="tax"><span>Tax</span><b class="num">${formatMoney(t.tax[i])}</b></div>
+          <div><span>Paid</span><b class="num">${formatMoney(t.paid[i])}</b></div>
+        </div>
         ${standing}
       </details>
     </section>`;
@@ -1311,7 +1312,7 @@ function summaryView() {
     </div>
   </div>
   <div class="footer-bar">
-    <button class="outline" id="start-over">Start over</button>
+    <button class="start-over-btn" id="start-over">Start over</button>
   </div>`;
   return html;
 }
@@ -1334,11 +1335,18 @@ function summaryText() {
 function confirmTwice(button, prompt, label, action) {
   if (button.dataset.armed) return action();
   button.dataset.armed = "1";
-  button.textContent = prompt;
+  const iconOnly = button.classList.contains("remove-receipt");
+  if (iconOnly) {
+    button.classList.add("armed");
+    button.title = prompt;
+  } else button.textContent = prompt;
   setTimeout(() => {
     if (!button.isConnected) return;
     delete button.dataset.armed;
-    button.textContent = label;
+    if (iconOnly) {
+      button.classList.remove("armed");
+      button.title = label;
+    } else button.textContent = label;
   }, 3000);
 }
 
@@ -1348,7 +1356,8 @@ const clickHandlers = {
   go: (btn) => {
     const step = Number(btn.dataset.go);
     if (step === 2) {
-      state.cur = 0;
+      const firstOpen = allItems().findIndex((item) => !item.pct);
+      state.cur = Math.max(0, firstOpen);
       split.customFor = null;
     }
     goToStep(step);
@@ -1392,7 +1401,7 @@ const clickHandlers = {
   },
 
   removeReceipt: (btn) =>
-    confirmTwice(btn, "Tap again to remove", "Remove", () => {
+    confirmTwice(btn, "Tap again to remove receipt", "Remove receipt", () => {
       const id = btn.dataset.removeReceipt;
       state.receipts = state.receipts.filter((r) => r.id != id);
       photos = photos.filter((p) => p.receiptId != id);
@@ -1448,13 +1457,52 @@ const clickHandlers = {
   },
 };
 
+function toggleDetails(details) {
+  details.getAnimations().forEach((a) => a.cancel());
+  const opening = !details.open || details.classList.contains("closing");
+  details.classList.remove("closing");
+
+  const startHeight = details.offsetHeight;
+  let endHeight;
+  if (opening) {
+    details.open = true;
+    endHeight = details.offsetHeight;
+  } else {
+    details.open = false;
+    endHeight = details.offsetHeight;
+    details.open = true;
+  }
+
+  if (prefersReducedMotion()) {
+    details.open = opening;
+    return;
+  }
+
+  if (!opening) details.classList.add("closing");
+  details.style.overflow = "hidden";
+  const animation = details.animate(
+    [{ height: `${startHeight}px` }, { height: `${endHeight}px` }],
+    { duration: 240, easing: "cubic-bezier(0.2, 0.7, 0.2, 1)" },
+  );
+  animation.onfinish = () => {
+    details.style.overflow = "";
+    if (!opening) {
+      details.open = false;
+      details.classList.remove("closing");
+    }
+  };
+  animation.oncancel = () => {
+    details.style.overflow = "";
+  };
+}
+
 const clickById = {
   "read-all": () => readAllPhotos(),
 
-  "toggle-key": () => {
-    keyOpen = !keyOpen;
-    render();
-    if (keyOpen) byId("gemini-key")?.focus();
+  "toggle-menu": () => {
+    menuOpen = !menuOpen;
+    renderHeader();
+    if (menuOpen && !canReadPhotos()) byId("gemini-key")?.focus();
   },
 
   "add-manual": () => {
@@ -1470,7 +1518,7 @@ const clickById = {
   },
 
   "start-over": (btn) =>
-    confirmTwice(btn, "Tap again to clear everything", "Start over", () => {
+    confirmTwice(btn, "Confirm?", "Start over", () => {
       state = emptyState();
       photos = [];
       saveState();
@@ -1499,6 +1547,16 @@ const clickById = {
 };
 
 document.addEventListener("click", (event) => {
+  const summary = event.target.closest(".bill-details summary");
+  if (summary) {
+    event.preventDefault();
+    toggleDetails(summary.parentElement);
+    return;
+  }
+  if (menuOpen && !event.target.closest(".popover, #toggle-menu")) {
+    menuOpen = false;
+    renderHeader();
+  }
   const target = event.target.closest("button, [data-jump]");
   if (!target) return;
   if (clickById[target.id]) return clickById[target.id](target);
@@ -1516,6 +1574,7 @@ document.addEventListener("input", (event) => {
     return;
   }
   if (el.id === "file") {
+    menuOpen = false;
     addPhotos(el.files);
     el.value = "";
     return;
@@ -1558,6 +1617,11 @@ document.addEventListener("change", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && menuOpen) {
+    menuOpen = false;
+    renderHeader();
+    return;
+  }
   if (state.step !== 2) return;
   const el = event.target;
 
