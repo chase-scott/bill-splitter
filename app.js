@@ -245,10 +245,21 @@ function blobToBase64(blob) {
 }
 
 class ReadError extends Error {
-  constructor(message, code) {
+  constructor(message, code, hint = "") {
     super(message);
     this.code = code;
+    this.hint = hint;
   }
+}
+
+function failureFor(status, message) {
+  if (status === 429) return new ReadError("Free limit reached", "rate_limited", "Wait a minute, then retry.");
+  if (status === 503 || /high demand|overloaded|unavailable/i.test(message)) {
+    return new ReadError("Google is busy", "busy", "Try again in a minute.");
+  }
+  if (status === 404) return new ReadError("Model unavailable", "unavailable", "Try again later.");
+  if (status >= 500) return new ReadError("Google had a problem", "busy", "Try again in a minute.");
+  return new ReadError("Google returned an error", undefined, message.slice(0, 140) || `Error ${status}`);
 }
 
 async function readReceiptWithGemini(image) {
@@ -265,8 +276,9 @@ async function readReceiptWithGemini(image) {
     generationConfig: { temperature: 0, responseMimeType: "application/json" },
   });
 
-  let lastError = new ReadError("No answer");
+  let lastError = new ReadError("No answer from Google", undefined, "Try again.");
   let rateLimited = false;
+  let busy = false;
 
   for (const model of GEMINI_MODELS) {
     let response;
@@ -277,7 +289,7 @@ async function readReceiptWithGemini(image) {
         body,
       });
     } catch {
-      throw new ReadError("Can't reach Google. Check your connection");
+      throw new ReadError("Can't reach Google", "offline", "Check your connection.");
     }
 
     const json = await response.json().catch(() => null);
@@ -286,34 +298,38 @@ async function readReceiptWithGemini(image) {
     if (response.ok) {
       const text = (json?.candidates?.[0]?.content?.parts ?? []).map((part) => part.text ?? "").join("");
       if (text) return text;
-      lastError = new ReadError(json?.promptFeedback?.blockReason ? "Blocked by Google" : "Empty answer");
+      lastError = json?.promptFeedback?.blockReason
+        ? new ReadError("Google blocked this photo", undefined, "Try a clearer photo.")
+        : new ReadError("No answer from Google", undefined, "Try again.");
       continue;
     }
 
     const badKey =
       response.status === 401 || response.status === 403 || (response.status === 400 && /api key/i.test(errorMessage));
-    if (badKey) throw new ReadError("Key rejected. Check it in Photo reading", "bad_key");
+    if (badKey) throw new ReadError("Key rejected", "bad_key", "Check your Gemini key.");
 
-    if (response.status === 429) {
-      rateLimited = true;
-      continue;
-    }
-    if (response.status === 404 || response.status >= 500) {
-      lastError = new ReadError(errorMessage || `Error ${response.status}`);
-      continue;
-    }
-    throw new ReadError((errorMessage || `Error ${response.status}`).slice(0, 80));
+    const failure = failureFor(response.status, errorMessage);
+    if (failure.code === "rate_limited") rateLimited = true;
+    else if (failure.code === "busy") busy = true;
+    else if (failure.code === undefined) throw failure;
+    lastError = failure;
   }
 
-  if (rateLimited) throw new ReadError("Free limit reached. Try again in a minute", "rate_limited");
+  if (rateLimited) throw failureFor(429, "");
+  if (busy) throw failureFor(503, "");
   throw lastError;
 }
 
 function parseReceipt(text) {
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
-  if (start < 0 || end < start) throw new ReadError("Couldn't read the receipt's answer");
-  return JSON.parse(text.slice(start, end + 1));
+  const unreadable = new ReadError("Couldn't read Google's answer", undefined, "Try again.");
+  if (start < 0 || end < start) throw unreadable;
+  try {
+    return JSON.parse(text.slice(start, end + 1));
+  } catch {
+    throw unreadable;
+  }
 }
 
 async function shrinkImage(file, maxSide = 1400) {
@@ -367,6 +383,7 @@ function addPhotos(files) {
 async function readPhoto(photo) {
   photo.status = "reading";
   photo.message = "";
+  photo.hint = "";
   render();
 
   try {
@@ -384,7 +401,9 @@ async function readPhoto(photo) {
         ] ?? 0,
       pct: null,
     }));
-    if (!items.length) throw new ReadError("No items found");
+    if (!items.length) {
+      throw new ReadError("No items found", undefined, "Get the whole receipt in frame.");
+    }
 
     const added = {
       id: newId(),
@@ -399,11 +418,15 @@ async function readPhoto(photo) {
     saveState();
     queueProductLookups();
   } catch (error) {
+    const failure =
+      error instanceof ReadError
+        ? error
+        : new ReadError("Couldn't read this receipt", undefined, "Try again or enter it by hand.");
     photo.status = "error";
-    photo.message =
-      error.code === "rate_limited" ? "Busy, retry in a moment" : (error.message || "Couldn't read").slice(0, 60);
+    photo.message = failure.message;
+    photo.hint = failure.hint;
     render();
-    return error.code;
+    return failure.code;
   }
   render();
 }
@@ -413,7 +436,7 @@ async function readAllPhotos() {
   reading = true;
   for (const photo of photos.filter((p) => p.status === "new" || p.status === "error")) {
     const code = await readPhoto(photo);
-    if (code === "rate_limited" || code === "bad_key") break;
+    if (["rate_limited", "busy", "offline", "bad_key"].includes(code)) break;
   }
   reading = false;
   render();
@@ -821,18 +844,21 @@ function keyPanelHtml() {
 }
 
 function photoHtml(photo) {
-  const statusText =
-    {
-      new: '<span class="muted">Not read yet</span>',
-      reading: '<span><span class="spinner"></span>Reading</span>',
-      done: '<span class="ok">Read</span>',
-    }[photo.status] ??
-    `<span>${escapeHtml(photo.message)}</span><button class="link" data-retry="${photo.id}">Retry</button>`;
+  const failed = photo.status === "error";
+  const title = {
+    new: "Not read yet",
+    reading: '<span class="spinner"></span>Reading',
+    done: "Read",
+  }[photo.status];
 
-  return `<div class="photo">
+  return `<div class="photo${failed ? " failed" : ""}">
     ${photo.url ? `<img src="${photo.url}" alt="">` : '<div class="photo-placeholder"></div>'}
-    ${photo.status !== "reading" ? `<button class="remove" data-remove-photo="${photo.id}" aria-label="Remove photo">${icon("x", 14)}</button>` : ""}
-    <div class="photo-status ${photo.status === "error" ? "error" : ""}">${statusText}</div>
+    <div class="photo-body">
+      <div class="photo-title">${failed ? `${icon("alert")}${escapeHtml(photo.message)}` : title}</div>
+      ${failed && photo.hint ? `<div class="photo-hint">${escapeHtml(photo.hint)}</div>` : ""}
+    </div>
+    ${failed ? `<button class="link" data-retry="${photo.id}" ${reading ? "disabled" : ""}>Retry</button>` : ""}
+    ${photo.status !== "reading" ? `<button class="remove" data-remove-photo="${photo.id}" aria-label="Remove photo">${icon("x")}</button>` : ""}
   </div>`;
 }
 

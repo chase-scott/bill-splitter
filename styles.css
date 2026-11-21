@@ -517,25 +517,29 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .photos {
   display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
+  flex-direction: column;
+  gap: 8px;
   margin-bottom: 16px;
 }
 
 .photo {
-  position: relative;
-  width: 104px;
-  border-radius: 8px;
-  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 8px 8px 8px;
   border: 1px solid var(--border);
+  border-radius: 12px;
   background: var(--surface);
+  overflow: hidden;
 }
 
 .photo img,
 .photo-placeholder {
+  flex: none;
   display: block;
-  width: 104px;
-  height: 112px;
+  width: 48px;
+  height: 56px;
+  border-radius: 6px;
   object-fit: cover;
 }
 
@@ -543,36 +547,46 @@ input[type="number"]::-webkit-outer-spin-button {
   background: var(--sunken);
 }
 
-.photo-status {
-  font-size: 12px;
-  padding: 4px 8px;
-  min-height: 28px;
-  display: flex;
-  justify-content: space-between;
-  gap: 4px;
-  align-items: center;
+.photo-body {
+  flex: 1;
+  min-width: 0;
 }
 
-.photo-status.error {
+.photo-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.photo-title .icon {
+  flex: none;
+}
+
+.photo.failed .photo-title {
   color: var(--negative);
 }
 
+.photo-hint {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--text-faint);
+}
+
 .photo .remove {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 24px;
-  height: 24px;
+  flex: none;
+  width: 32px;
+  height: 32px;
   padding: 0;
   justify-content: center;
-  border-radius: 6px;
   border: none;
-  background: rgba(20, 20, 18, 0.6);
-  color: #fff;
+  background: none;
+  color: var(--text-faint);
 }
 
 .photo .remove:hover:not(:disabled) {
-  background: rgba(20, 20, 18, 0.8);
+  color: var(--text);
+  background: none;
 }
 
 .key-panel {
