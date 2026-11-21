@@ -731,6 +731,33 @@ input[type="number"]::-webkit-outer-spin-button {
 .product {
   display: flex;
   align-items: center;
+  justify-content: center;
+}
+
+.item-main .product {
+  flex: none;
+  width: 20px;
+}
+
+.item-main .spinner {
+  margin: 0;
+}
+
+.tax-chip {
+  height: 24px;
+  margin-left: auto;
+  padding: 0 8px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.tax-chip.taxed {
+  border-color: transparent;
+  background: var(--accent-tint);
+  color: var(--accent-text);
 }
 
 .lookup {
@@ -742,7 +769,7 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 .lookup.missing {
-  color: var(--text-faint);
+  color: var(--negative);
 }
 
 .product-image {
@@ -862,8 +889,7 @@ input[type="number"]::-webkit-outer-spin-button {
   background:
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.2 0 0 0 0 0.18 0 0 0 0 0.14 0 0 0 0.09 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"),
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='480' height='480'%3E%3Cfilter id='m'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.012 0.035' numOctaves='3' seed='4' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.45 0 0 0 0 0.4 0 0 0 0 0.3 0 0 0 0.1 -0.02'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23m)'/%3E%3C/svg%3E"),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.35), transparent 30%, rgba(120, 105, 80, 0.04)),
-    var(--paper);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.35), transparent 30%, rgba(120, 105, 80, 0.04)), var(--paper);
   color: var(--ink);
   font-family: var(--mono);
   font-size: 14px;
@@ -1228,10 +1254,6 @@ input[type="number"]::-webkit-outer-spin-button {
 
 #paid-check {
   grid-column: 1 / -1;
-}
-
-.tax-row .suffix-field {
-  width: 88px;
 }
 
 .people {

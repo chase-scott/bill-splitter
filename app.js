@@ -16,9 +16,12 @@ const SPLIT_PRESETS = [
   { label: "Michaelah + Emily", short: "M + E", percents: [0, 50, 50] },
 ];
 
+const TAX_FLAGS = { D: 0, J: 13, Z: 5 };
+const TAX_RATES = [0, 13, 5];
+
 const RECEIPT_PROMPT = `You are reading a photo of a store receipt. Extract every purchased line item.
 Return ONLY a JSON object, no other text, in exactly this shape:
-{"store":"<store name, or empty string>","items":[{"name":"<item text as printed>","code":"<product number printed on that line, digits only, or empty string>","price":<number>}],"subtotal":<pre-tax subtotal as a number, or null>}
+{"store":"<store name, or empty string>","items":[{"name":"<item text as printed>","code":"<product number printed on that line, digits only, or empty string>","price":<number>,"flag":"<the single tax letter printed right after the price, or empty string>"}],"subtotal":<pre-tax subtotal as a number, or null>,"tax":<total tax charged as a number, or null>}
 Rules:
 - code is the UPC / product / item number printed on the same line as the item (often 8-13 digits before or after the name). Copy every digit exactly; use "" if there is none.
 - price is the final amount charged for that line, as a plain number without $ (e.g. 4.96).
@@ -26,7 +29,9 @@ Rules:
 - Weighed items: keep the weight detail in the name, e.g. "BANANAS (1.470 kg @ $1.50/kg)".
 - An item printed on two separate lines appears twice. If one line shows a quantity (e.g. "2 @ 3.97"), give one item with the line total and keep the quantity in the name.
 - Include deposits and eco/environmental fees as items.
-- Do NOT include subtotal, tax (HST/GST/PST), total, payment, change, points or savings-summary lines.
+- flag is the single capital letter printed just after the price on that line (for example D, J or Z). Copy it exactly and use "" if there is none. Never include it in the name or price.
+- tax is the total tax charged on the receipt. If there are several tax lines (HST, GST, PST, QST), add them together. Use null if no tax is printed. Read it from the tax line itself; do not calculate it.
+- Do NOT include subtotal, tax (HST/GST/PST), total, payment, change, points or savings-summary lines as items.
 - If part of the receipt is unreadable, include only what you can read.`;
 
 const GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest"];
@@ -52,18 +57,20 @@ function writeStorage(key, value) {
 }
 
 function emptyState() {
-  return { step: 1, receipts: [], cur: 0, paid: ["", "", ""], paidBy: {}, tax: 13 };
+  return { step: 1, receipts: [], cur: 0, paid: ["", "", ""], paidBy: {} };
 }
 
 function loadState() {
   const saved = readStorage(STORAGE_KEYS.state, null);
   if (!saved || !Array.isArray(saved.receipts)) return emptyState();
   saved.paidBy = saved.paidBy || {};
-  saved.receipts.forEach((receipt) =>
+  delete saved.tax;
+  saved.receipts.forEach((receipt) => {
+    receipt.tax = receipt.tax == null || receipt.tax === "" ? null : toNumber(receipt.tax);
     receipt.items.forEach((item) => {
       if (item.offs === "pending") delete item.offs;
-    }),
-  );
+    });
+  });
   return saved;
 }
 
@@ -129,6 +136,35 @@ function presetIndex(percents) {
 }
 
 const receiptSubtotal = (receipt) => receipt.items.reduce((sum, item) => sum + toCents(item.price), 0);
+const itemRate = (item) => toNumber(item.taxRate);
+
+function itemsTax(items) {
+  const taxable = {};
+  for (const item of items) {
+    const rate = itemRate(item);
+    if (rate > 0) taxable[rate] = (taxable[rate] || 0) + toCents(item.price);
+  }
+  return Object.entries(taxable).reduce((sum, [rate, cents]) => sum + Math.round((cents * rate) / 100), 0);
+}
+
+const receiptTax = (receipt) => itemsTax(receipt.items);
+const receiptTotal = (receipt) => receiptSubtotal(receipt) + receiptTax(receipt);
+
+function distribute(total, exact) {
+  const shares = exact.map(Math.floor);
+  const order = [0, 1, 2].sort((a, b) => exact[b] - shares[b] - (exact[a] - shares[a]));
+  let diff = total - shares.reduce((a, b) => a + b, 0);
+  for (let k = 0; diff !== 0; k = (k + 1) % 3) {
+    if (diff > 0) {
+      shares[order[k]]++;
+      diff--;
+    } else if (shares[order[2 - k]] > 0) {
+      shares[order[2 - k]]--;
+      diff++;
+    }
+  }
+  return shares;
+}
 
 function splitCents(cents, percents) {
   if (!percents) return [0, 0, 0];
@@ -142,6 +178,7 @@ function splitCents(cents, percents) {
 
 function totals() {
   const subtotal = [0, 0, 0];
+  const exactTax = [0, 0, 0];
   let itemsTotal = 0;
   let unsplitTotal = 0;
   let unsplitCount = 0;
@@ -154,11 +191,15 @@ function totals() {
       unsplitCount++;
       continue;
     }
-    splitCents(price, item.pct).forEach((share, i) => (subtotal[i] += share));
+    splitCents(price, item.pct).forEach((share, i) => {
+      subtotal[i] += share;
+      exactTax[i] += (share * itemRate(item)) / 100;
+    });
   }
 
-  const rate = toNumber(state.tax) / 100;
-  const tax = subtotal.map((v) => Math.round(v * rate));
+  const taxTotal = state.receipts.reduce((sum, receipt) => sum + receiptTax(receipt), 0);
+  const splitTax = state.receipts.reduce((sum, receipt) => sum + itemsTax(receipt.items.filter((i) => i.pct)), 0);
+  const tax = distribute(splitTax, exactTax);
   const owes = subtotal.map((v, i) => v + tax[i]);
   const paid = state.paid.map(toCents);
   const balance = paid.map((p, i) => p - owes[i]);
@@ -170,7 +211,8 @@ function totals() {
     paid,
     balance,
     itemsTotal,
-    itemsTotalWithTax: Math.round(itemsTotal * (1 + rate)),
+    taxTotal,
+    total: itemsTotal + taxTotal,
     unsplitTotal,
     unsplitCount,
   };
@@ -334,6 +376,12 @@ async function readPhoto(photo) {
       name: String(item.name || "Item").trim(),
       code: String(item.code ?? "").replace(/\D/g, ""),
       price: (Math.round(toNumber(item.price) * 100) / 100).toFixed(2),
+      taxRate:
+        TAX_FLAGS[
+          String(item.flag ?? "")
+            .trim()
+            .toUpperCase()
+        ] ?? 0,
       pct: null,
     }));
     if (!items.length) throw new ReadError("No items found");
@@ -343,6 +391,7 @@ async function readPhoto(photo) {
       name: String(receipt.store || "").trim() || `Receipt ${state.receipts.length + 1}`,
       items,
       subtotal: receipt.subtotal == null || receipt.subtotal === "" ? null : toNumber(receipt.subtotal),
+      tax: receipt.tax == null || receipt.tax === "" ? null : toNumber(receipt.tax),
     };
     state.receipts.push(added);
     photo.status = "done";
@@ -601,7 +650,7 @@ const ICONS = {
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   alert: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
   found: '<circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
-  missing: '<circle cx="12" cy="12" r="9" stroke-dasharray="3 3"/>',
+  missing: '<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6"/><path d="m15 9-6 6"/>',
   sparkle: '<path d="M12 3c.5 4.6 4.4 8.5 9 9-4.6.5-8.5 4.4-9 9-.5-4.6-4.4-8.5-9-9 4.6-.5 8.5-4.4 9-9z"/>',
 };
 
@@ -637,9 +686,9 @@ function productHtml(item, mode) {
 
   if (mode === "row") {
     if (item.offs === "pending") return '<span class="spinner" title="Looking up"></span>';
-    if (product) return `<span class="lookup found" title="${name}">${icon("found", 14)}</span>`;
+    if (product) return `<span class="lookup found" title="${name}">${icon("found", 16)}</span>`;
     if (item.offs === "none")
-      return `<span class="lookup missing" title="Not in Open Food Facts">${icon("missing", 14)}</span>`;
+      return `<span class="lookup missing" title="Not in Open Food Facts">${icon("missing", 16)}</span>`;
     return "";
   }
 
@@ -749,6 +798,14 @@ function receiptFooter(receipt) {
         ? '<span class="ok">Matches the receipt subtotal</span>'
         : `<span class="bad">Receipt subtotal is ${formatMoney(printed)}, off by ${formatMoney(diff)}</span>`;
   }
+  if (receipt.tax != null) {
+    const printed = toCents(receipt.tax);
+    const computed = receiptTax(receipt);
+    check +=
+      Math.abs(computed - printed) <= 1
+        ? '<span class="ok">Tax matches the receipt</span>'
+        : `<span class="bad">Tax is ${formatMoney(computed)}, receipt says ${formatMoney(printed)}</span>`;
+  }
   return `<span class="muted">${plural(receipt.items.length, "item")}</span><b class="num">${formatMoney(sum)}</b>${check}<span class="spacer"></span><button class="link" data-add-item="${receipt.id}">${icon("plus")}Add item</button>`;
 }
 
@@ -779,9 +836,17 @@ function photoHtml(photo) {
   </div>`;
 }
 
+const taxLabel = (rate) => (rate > 0 ? `${rate}% tax` : "No tax");
+
+function taxChipHtml(item) {
+  const rate = itemRate(item);
+  return `<button class="tax-chip${rate > 0 ? " taxed" : ""}" data-tax-cycle="${item.id}" aria-label="Tax rate, tap to change">${taxLabel(rate)}</button>`;
+}
+
 function itemRowHtml(item) {
   return `<div class="item" data-item="${item.id}">
     <div class="item-main">
+      <span class="product" data-product="${item.id}" data-mode="row">${productHtml(item, "row")}</span>
       <input class="item-name num" data-field="name" value="${escapeHtml(item.name)}" placeholder="Item name" aria-label="Item name">
       <span class="price-field"><i>$</i><input class="item-price num" data-field="price" type="number" inputmode="decimal" step="0.01" value="${escapeHtml(item.price)}" placeholder="0.00" aria-label="Price"></span>
       <button class="remove" data-remove-item="${item.id}" aria-label="Remove item">${icon("x")}</button>
@@ -789,7 +854,7 @@ function itemRowHtml(item) {
     <div class="item-meta">
       ${icon("barcode", 14)}
       <input class="item-code num" data-field="code" inputmode="numeric" placeholder="Product code" value="${escapeHtml(item.code || "")}" aria-label="Product code">
-      <span class="product" data-product="${item.id}" data-mode="row">${productHtml(item, "row")}</span>
+      ${taxChipHtml(item)}
     </div>
   </div>`;
 }
@@ -1044,12 +1109,11 @@ function cancelAdvance() {
 
 function paidView() {
   const t = totals();
-  const rate = toNumber(state.tax) / 100;
   const entered = t.paid.reduce((a, b) => a + b, 0);
 
   const receiptRows = state.receipts
     .map((receipt) => {
-      const total = Math.round(receiptSubtotal(receipt) * (1 + rate));
+      const total = receiptTotal(receipt);
       const choices = PEOPLE.map(
         (person, i) =>
           `<button data-paid-by="${receipt.id}:${i}" class="${state.paidBy[receipt.id] === i ? "on" : ""}">${personDot(i)}${person.name}</button>`,
@@ -1071,14 +1135,9 @@ function paidView() {
     <div class="panel">${receiptRows}</div>
     <div class="paid-fields">${fields}</div>
     <div class="tally">
-      <span class="muted">Total with tax</span><b class="num">${formatMoney(t.itemsTotalWithTax)}</b>
+      <span class="muted">Total with tax</span><b class="num">${formatMoney(t.total)}</b>
       <span class="muted">Entered</span><b class="num" id="entered">${formatMoney(entered)}</b>
       <span id="paid-check"></span>
-    </div>
-    <div class="row small tax-row">
-      <label for="tax" class="muted">Tax rate</label>
-      <span class="suffix-field"><input type="number" id="tax" class="num" step="0.5" min="0" value="${escapeHtml(state.tax)}"><span>%</span></span>
-      <span class="muted">on every item</span>
     </div>
     <div class="footer-bar">
       <button data-go="2">${icon("left")}Split</button>
@@ -1091,7 +1150,7 @@ function updatePaidCheck() {
   if (!byId("paid-check")) return;
   const t = totals();
   const entered = t.paid.reduce((a, b) => a + b, 0);
-  const diff = t.itemsTotalWithTax - entered;
+  const diff = t.total - entered;
   byId("entered").textContent = formatMoney(entered);
   byId("paid-check").innerHTML =
     entered === 0
@@ -1102,11 +1161,10 @@ function updatePaidCheck() {
 }
 
 function fillPaidFromReceipts() {
-  const rate = toNumber(state.tax) / 100;
   const sums = [0, 0, 0];
   for (const receipt of state.receipts) {
     const payer = state.paidBy[receipt.id];
-    if (payer !== undefined) sums[payer] += Math.round(receiptSubtotal(receipt) * (1 + rate));
+    if (payer !== undefined) sums[payer] += receiptTotal(receipt);
   }
   state.paid = sums.map((c) => (c ? (c / 100).toFixed(2) : ""));
 }
@@ -1193,8 +1251,8 @@ function summaryView() {
       ${rows}
       <tfoot>
         ${totalRow("Items", t.subtotal.map(formatMoney), formatMoney(t.itemsTotal))}
-        ${totalRow(`Tax ${toNumber(state.tax)}%`, t.tax.map(formatMoney), formatMoney(t.itemsTotalWithTax - t.itemsTotal))}
-        ${totalRow("Share", t.owes.map(formatMoney), formatMoney(t.itemsTotalWithTax), "total-row")}
+        ${totalRow("Tax", t.tax.map(formatMoney), formatMoney(t.taxTotal))}
+        ${totalRow("Share", t.owes.map(formatMoney), formatMoney(t.total), "total-row")}
       </tfoot>
     </table>
     <div class="footer-bar">
@@ -1232,7 +1290,7 @@ function confirmTwice(button, prompt, label, action) {
   }, 3000);
 }
 
-const blankItem = () => ({ id: newId(), name: "", code: "", price: "", pct: null });
+const blankItem = () => ({ id: newId(), name: "", code: "", price: "", taxRate: 0, pct: null });
 
 const clickHandlers = {
   go: (btn) => goToStep(Number(btn.dataset.go)),
@@ -1249,6 +1307,14 @@ const clickHandlers = {
   removePhoto: (btn) => {
     photos = photos.filter((p) => p.id != btn.dataset.removePhoto);
     render();
+  },
+
+  taxCycle: (btn) => {
+    const [receipt, item] = findItem(btn.dataset.taxCycle);
+    item.taxRate = TAX_RATES[(TAX_RATES.indexOf(itemRate(item)) + 1) % TAX_RATES.length];
+    saveState();
+    btn.outerHTML = taxChipHtml(item);
+    byId(`receipt-footer-${receipt.id}`).innerHTML = receiptFooter(receipt);
   },
 
   removeItem: (btn) => {
@@ -1338,6 +1404,7 @@ const clickById = {
       name: `Receipt ${state.receipts.length + 1}`,
       items: [blankItem()],
       subtotal: null,
+      tax: null,
     });
     saveState();
     render();
@@ -1418,15 +1485,11 @@ document.addEventListener("input", (event) => {
     updatePaidCheck();
     return;
   }
-  if (el.id === "tax") {
-    state.tax = el.value;
-    saveState();
-  }
 });
 
 document.addEventListener("change", (event) => {
   const el = event.target;
-  if (el.id === "gemini-key" || el.id === "tax") render();
+  if (el.id === "gemini-key") render();
   if (el.dataset.field === "code") {
     const [, item] = findItem(el.closest("[data-item]").dataset.item);
     updateProductViews(item);
