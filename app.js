@@ -152,19 +152,44 @@ const receiptTotal = (receipt) => receiptSubtotal(receipt) + receiptTax(receipt)
 
 function distribute(total, exact) {
   const shares = exact.map(Math.floor);
-  const order = [0, 1, 2].sort((a, b) => exact[b] - shares[b] - (exact[a] - shares[a]));
+  const order = exact.map((_, i) => i).sort((a, b) => exact[b] - shares[b] - (exact[a] - shares[a]));
   let diff = total - shares.reduce((a, b) => a + b, 0);
-  for (let k = 0; diff !== 0; k = (k + 1) % 3) {
+  for (let k = 0; diff !== 0 && k < 1000; k++) {
     if (diff > 0) {
-      shares[order[k]]++;
+      shares[order[k % order.length]]++;
       diff--;
-    } else if (shares[order[2 - k]] > 0) {
-      shares[order[2 - k]]--;
+    } else {
+      shares[order[order.length - 1 - (k % order.length)]]--;
       diff++;
     }
   }
   return shares;
 }
+
+function itemTaxCents(receipt) {
+  const groups = {};
+  for (const item of receipt.items) {
+    const rate = itemRate(item);
+    if (rate > 0) (groups[rate] ||= []).push(item);
+  }
+  const result = {};
+  for (const [rate, items] of Object.entries(groups)) {
+    const exact = items.map((item) => (toCents(item.price) * rate) / 100);
+    const total = Math.round(exact.reduce((a, b) => a + b, 0));
+    distribute(total, exact).forEach((cents, k) => (result[items[k].id] = cents));
+  }
+  return result;
+}
+
+function itemTax(item) {
+  const [receipt] = findItem(item.id);
+  return receipt ? itemTaxCents(receipt)[item.id] || 0 : 0;
+}
+
+const slipTaxHtml = (item) => {
+  const tax = itemTax(item);
+  return tax > 0 ? `<span class="slip-tax">+${formatMoney(tax)} tax</span>` : "";
+};
 
 function splitCents(cents, percents) {
   if (!percents) return [0, 0, 0];
@@ -674,11 +699,20 @@ const ICONS = {
   alert: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
   found: '<circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
   missing: '<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6"/><path d="m15 9-6 6"/>',
+  chevron: '<path d="m6 9 6 6 6-6"/>',
   sparkle: '<path d="M12 3c.5 4.6 4.4 8.5 9 9-4.6.5-8.5 4.4-9 9-.5-4.6-4.4-8.5-9-9 4.6-.5 8.5-4.4 9-9z"/>',
 };
 
 function icon(name, size = 16) {
   return `<svg class="icon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+}
+
+const avatar = (i, size = "") =>
+  `<span class="avatar ${size}" style="background:${PEOPLE[i].color}" aria-hidden="true">${PEOPLE[i].short}</span>`;
+
+function avatarStack(percents) {
+  const people = percents.map((p, i) => (p > 0 ? i : -1)).filter((i) => i >= 0);
+  return `<span class="avatars">${people.map((i) => avatar(i)).join("")}</span>`;
 }
 
 const personDot = (i) => `<span class="dot" style="background:${PEOPLE[i].color}"></span>`;
@@ -723,19 +757,14 @@ function productHtml(item, mode) {
         <div class="slip-hero-text">
           <div class="slip-hero-name">${name}</div>
           ${detail ? `<div class="slip-hero-detail">${escapeHtml(detail)}</div>` : ""}
-          <div class="slip-hero-price">${price}</div>
+          <div class="slip-hero-price"><span>${price}</span>${slipTaxHtml(item)}</div>
         </div>
       </div>`;
     }
-    return `<div class="slip-line"><span class="slip-name">${escapeHtml(item.name)}</span><span class="slip-price">${price}</span></div>
+    return `<div class="slip-line"><span class="slip-name">${escapeHtml(item.name)}</span>${slipTaxHtml(item)}<span class="slip-price">${price}</span></div>
       ${item.code ? `<div class="slip-code">${escapeHtml(item.code)}</div>` : ""}
       ${item.offs === "pending" ? '<div class="slip-looking"><span class="spinner"></span>Looking up product</div>' : ""}`;
   }
-
-  if (product) {
-    return `<span class="product-cell">${productImage(product.img, 12)}<span>${escapeHtml(product.name || item.name)}<span class="receipt-text num">${escapeHtml(item.name)}</span></span></span>`;
-  }
-  return `<span class="receipt-text-only num">${escapeHtml(item.name)}</span>`;
 }
 
 function updateProductViews(item) {
@@ -795,8 +824,23 @@ function drawProductImages() {
   });
 }
 
+const STEP_TITLES = { 1: "Bill Splitter", 2: "Split items", 3: "Who paid", 4: "Summary" };
+
+function renderHeader() {
+  const back = byId("back");
+  back.innerHTML = icon("left", 20);
+  back.dataset.go = Math.max(1, state.step - 1);
+  back.classList.toggle("hidden", state.step === 1);
+  byId("title").textContent = STEP_TITLES[state.step] || STEP_TITLES[1];
+  byId("header-action").innerHTML =
+    state.step === 4
+      ? `<button class="icon-button" id="copy-summary" aria-label="Copy summary" title="Copy summary">${icon("copy", 20)}</button>`
+      : "";
+}
+
 function render() {
   const views = { 1: receiptsView, 2: splitView, 3: paidView, 4: summaryView };
+  renderHeader();
   byId("main").innerHTML = (views[state.step] || receiptsView)();
   drawProductImages();
   if (state.step === 2 && split.customOpen) updateCustomSplit();
@@ -811,25 +855,24 @@ function goToStep(step) {
 }
 
 function receiptFooter(receipt) {
-  const sum = receiptSubtotal(receipt);
-  let check = "";
-  if (receipt.subtotal != null) {
-    const printed = Math.round(receipt.subtotal * 100);
-    const diff = Math.abs(sum - printed);
-    check =
-      diff <= 1
-        ? '<span class="ok">Matches the receipt subtotal</span>'
-        : `<span class="bad">Receipt subtotal is ${formatMoney(printed)}, off by ${formatMoney(diff)}</span>`;
-  }
-  if (receipt.tax != null) {
-    const printed = toCents(receipt.tax);
-    const computed = receiptTax(receipt);
-    check +=
-      Math.abs(computed - printed) <= 1
-        ? '<span class="ok">Tax matches the receipt</span>'
-        : `<span class="bad">Tax is ${formatMoney(computed)}, receipt says ${formatMoney(printed)}</span>`;
-  }
-  return `<span class="muted">${plural(receipt.items.length, "item")}</span><b class="num">${formatMoney(sum)}</b>${check}<span class="spacer"></span><button class="link" data-add-item="${receipt.id}">${icon("plus")}Add item</button>`;
+  const subtotal = receiptSubtotal(receipt);
+  const tax = receiptTax(receipt);
+
+  const line = (label, cents, printed, extra = "") => {
+    const checked = printed != null;
+    const wrong = checked && Math.abs(cents - printed) > 1;
+    return `<div class="total-line${extra}"><span>${label}</span><b class="num${wrong ? " bad" : ""}">${formatMoney(cents)}</b><span class="total-status">${checked && !wrong ? '<span class="ok"></span>' : ""}</span></div>${wrong ? `<div class="total-note bad">Receipt says ${formatMoney(printed)}</div>` : ""}`;
+  };
+
+  const printedSubtotal = receipt.subtotal == null ? null : Math.round(receipt.subtotal * 100);
+  const printedTax = receipt.tax == null ? null : toCents(receipt.tax);
+
+  return `<div class="total-lines">
+      ${line("Subtotal", subtotal, printedSubtotal)}
+      ${line("Tax", tax, printedTax, " tax")}
+      ${line("Total", subtotal + tax, null, " sum")}
+    </div>
+    <div class="footer-actions"><span class="muted">${plural(receipt.items.length, "item")}</span><span class="spacer"></span><button class="dashed" data-add-item="${receipt.id}">${icon("plus")}Add item</button></div>`;
 }
 
 let keyOpen = false;
@@ -886,14 +929,14 @@ function itemRowHtml(item) {
 }
 
 function receiptHtml(receipt) {
-  return `<div class="receipt" data-receipt="${receipt.id}">
+  return `<div class="receipt-wrap"><div class="receipt" data-receipt="${receipt.id}">
     <div class="receipt-header">
       <input data-receipt-name value="${escapeHtml(receipt.name)}" aria-label="Store">
       <button class="link quiet" data-remove-receipt="${receipt.id}">Remove</button>
     </div>
     ${receipt.items.map(itemRowHtml).join("")}
     <div class="receipt-footer" id="receipt-footer-${receipt.id}">${receiptFooter(receipt)}</div>
-  </div>`;
+  </div></div>`;
 }
 
 function receiptsView() {
@@ -925,12 +968,9 @@ function receiptsView() {
     html += state.receipts.map(receiptHtml).join("");
   }
 
-  html += `<p class="small muted">No photo? <button class="link" id="add-manual">Enter a receipt by hand</button></p>`;
+  html += `<p class="small muted center">No photo? <button class="link" id="add-manual">Enter a receipt by hand</button>${state.receipts.length ? ' · <button id="start-over" class="link quiet">Start over</button>' : ""}</p>`;
   html += `<div class="footer-bar">
-    <span class="small muted">${plural(itemCount, "item")}</span>
-    <span class="spacer"></span>
-    ${state.receipts.length ? '<button id="start-over" class="link quiet">Start over</button>' : ""}
-    <button class="primary" data-go="2" ${itemCount ? "" : "disabled"}>Split items${icon("right")}</button>
+    <button class="primary" data-go="2" ${itemCount ? "" : "disabled"}>Split ${plural(itemCount, "item")}</button>
   </div>`;
   return html;
 }
@@ -1000,13 +1040,13 @@ function splitView() {
     ? ""
     : `<div class="presets">${SPLIT_PRESETS.map(
         (p, i) => `<button data-preset="${i}" class="${preset === i ? "on" : ""}" aria-label="${p.label}">
-          ${shareBar(p.percents)}
+          ${avatarStack(p.percents)}
           <span class="preset-label">${p.short}</span>
           <kbd>${i + 1}</kbd>
         </button>`,
       ).join("")}
         <button data-custom-toggle class="${item.pct && preset < 0 ? "on" : ""}">
-          ${shareBar(null)}
+          <span class="avatars"><span class="avatar ghost">${icon("plus", 14)}</span></span>
           <span class="preset-label">Custom</span>
           <kbd>8</kbd>
         </button>
@@ -1021,7 +1061,7 @@ function splitView() {
   const progress = (doneCount / items.length).toFixed(4);
   const left = items.length - doneCount;
 
-  return `<div class="progress-label"><span>Item ${state.cur + 1} of ${items.length}</span><span>${doneCount} of ${items.length} split</span></div>
+  return `<div class="progress-label"><span>Item ${state.cur + 1} of ${items.length}</span><span>${left ? `${left} left` : "All split"}</span></div>
     <div class="progress"><i style="transform:scaleX(${progress})"></i></div>
 
     <div class="slip-wrap${enterClass}" id="slip-wrap">
@@ -1042,16 +1082,13 @@ function splitView() {
     </div>
 
     <div class="running-total">
-      <div class="row"><span class="muted small">Split so far, before tax</span></div>
-      ${shareBar(t.subtotal, "medium")}
-      <div class="running-names">${PEOPLE.map((p, i) => `<span>${personDot(i)}${p.name}<b class="num">${formatMoney(t.subtotal[i])}</b></span>`).join("")}</div>
+      <div class="row"><span class="muted small">Split so far, with tax</span></div>
+      ${shareBar(t.owes, "medium")}
+      <div class="running-names">${PEOPLE.map((p, i) => `<span>${personDot(i)}${p.name}<b class="num">${formatMoney(t.owes[i])}</b></span>`).join("")}</div>
     </div>
 
     <div class="footer-bar">
-      <button data-go="1">${icon("left")}Receipts</button>
-      <span class="spacer"></span>
-      <span class="small muted">${left ? `${left} left` : '<span class="ok">All split</span>'}</span>
-      <button class="${split.customOpen ? "" : "primary"}" data-go="3">Who paid${icon("right")}</button>
+      <button class="${split.customOpen ? "" : "primary"}" data-go="3">Who paid</button>
     </div>`;
 }
 
@@ -1166,9 +1203,7 @@ function paidView() {
       <span id="paid-check"></span>
     </div>
     <div class="footer-bar">
-      <button data-go="2">${icon("left")}Split</button>
-      <span class="spacer"></span>
-      <button class="primary" data-go="4">Summary${icon("right")}</button>
+      <button class="primary" data-go="4">Summary</button>
     </div>`;
 }
 
@@ -1211,7 +1246,7 @@ function summaryView() {
     settleLines = transfers
       .map(
         ({ from, to, amount }) =>
-          `<div class="transfer"><span>${personDot(from)}${PEOPLE[from].name}</span><span class="muted">pays</span><span>${personDot(to)}${PEOPLE[to].name}</span><b class="num">${formatMoney(amount)}</b></div>`,
+          `<div class="transfer"><span>${avatar(from, "sm")}${PEOPLE[from].name}</span><span class="muted">pays</span><span>${avatar(to, "sm")}${PEOPLE[to].name}</span><b class="num">${formatMoney(amount)}</b></div>`,
       )
       .join("");
   }
@@ -1225,68 +1260,59 @@ function summaryView() {
     html += notice(`Paid ${formatMoney(paidTotal)} but the shares add up to ${formatMoney(owedTotal)}`);
   }
 
-  const peopleRows = PEOPLE.map((person, i) => {
+  const items = allItems();
+
+  const personSection = (person, i) => {
     const balance = t.balance[i];
-    const tone = balance > 0 ? "positive" : balance < 0 ? "negative" : "";
-    return `<div class="people-row"><span>${personDot(i)}${person.name}</span><span class="num">${formatMoney(t.owes[i])}</span><span class="num">${formatMoney(t.paid[i])}</span><span class="num ${tone}">${balance > 0 ? "+" : ""}${formatMoney(balance)}</span></div>`;
-  }).join("");
+    const standing =
+      paidTotal && balance
+        ? `<div class="detail-row"><span>Balance</span><span class="${balance > 0 ? "positive" : "negative"}">${balance > 0 ? "Gets back" : "Owes"} ${formatMoney(Math.abs(balance))}</span></div>`
+        : "";
+    const lines = items
+      .filter((item) => item.pct && item.pct[i] > 0)
+      .map((item) => {
+        const share = splitCents(toCents(item.price), item.pct)[i];
+        return `<div class="person-item" data-jump="${items.indexOf(item)}" title="Change split">
+          <span class="item-share">${formatPercent(item.pct[i])}</span>
+          <span class="detail-name">${escapeHtml(item.off?.name || item.name || "Item")}</span>
+          <span class="num">${formatMoney(share)}</span>
+        </div>`;
+      })
+      .join("");
+    return `<section class="person-section">
+      <div class="person-top">
+        ${avatar(i, "lg")}
+        <b class="person-name">${person.name}'s Total</b>
+        <span class="person-amount num">${formatMoney(t.owes[i])}</span>
+      </div>
+      ${lines ? `<div class="person-items">${lines}</div>` : '<p class="small muted person-empty">Nothing split to them yet</p>'}
+      <details class="bill-details">
+        <summary><span>Bill Details</span><span class="chevron">${icon("chevron", 16)}</span></summary>
+        <div class="detail-row"><span>Items</span><span class="num">${formatMoney(t.subtotal[i])}</span></div>
+        <div class="detail-row tax"><span>Tax</span><span class="num">${formatMoney(t.tax[i])}</span></div>
+        <div class="detail-row sum"><span>Total</span><span class="num">${formatMoney(t.owes[i])}</span></div>
+        <div class="detail-row"><span>Paid</span><span class="num">${formatMoney(t.paid[i])}</span></div>
+        ${standing}
+      </details>
+    </section>`;
+  };
 
-  html += `<div class="panel people">
-    ${shareBar(t.owes, "medium")}
-    <div class="people-row head"><span></span><span>Share</span><span>Paid</span><span>Balance</span></div>
-    ${peopleRows}
-    <div class="transfers">${settleLines}</div>
+  const stores = state.receipts.map((receipt) => escapeHtml(receipt.name)).join(" · ");
+  const date = new Date().toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+
+  html += `<div class="receipt-wrap">
+    <div class="receipt summary-card">
+      <div class="summary-head"><h2>${stores}</h2><span class="muted">${date}</span></div>
+      <section class="settle-section">
+        <h3>Settle up</h3>
+        <div class="transfers">${settleLines}</div>
+      </section>
+      ${PEOPLE.map(personSection).join("")}
+    </div>
+  </div>
+  <div class="footer-bar">
+    <button class="outline" id="start-over">Start over</button>
   </div>`;
-
-  let index = 0;
-  const rows = state.receipts
-    .map((receipt) => {
-      const lines = receipt.items.map((item) => {
-        const price = toCents(item.price);
-        const shares = splitCents(price, item.pct);
-        const cells = shares
-          .map((share, i) => {
-            if (!item.pct || !item.pct[i]) return '<td class="amount num zero">–</td>';
-            const percent = item.pct[i] < 99.99 ? `<span class="percent">${formatPercent(item.pct[i])}</span>` : "";
-            return `<td class="amount num">${formatMoney(share)}${percent}</td>`;
-          })
-          .join("");
-        return `<tbody class="line${item.pct ? "" : " unsplit"}" data-jump="${index++}" title="Change split">
-          <tr>
-            <td><span data-product="${item.id}" data-mode="cell">${productHtml(item, "cell")}</span></td>
-            <td class="amount num">${formatMoney(price)}</td>${cells}
-          </tr>
-          <tr class="bar-row"><td colspan="5">${shareBar(item.pct, "thin")}</td></tr>
-        </tbody>`;
-      });
-      return `<tbody><tr class="store-row"><td colspan="5">${escapeHtml(receipt.name)}</td></tr></tbody>${lines.join("")}`;
-    })
-    .join("");
-
-  const totalRow = (label, values, total = "", cls = "") =>
-    `<tr class="${cls}"><td>${label}</td><td class="amount num">${total}</td>${values.map((v) => `<td class="amount num">${v}</td>`).join("")}</tr>`;
-
-  const headCells = PEOPLE.map(
-    (person, i) =>
-      `<th>${personDot(i)}<span class="name-full">${person.name}</span><span class="name-short">${person.short}</span></th>`,
-  ).join("");
-
-  html += `<div class="section-head"><h2>Items</h2><span class="muted small">Tap an item to change its split</span></div>
-    <table>
-      <thead><tr><th>Item</th><th>Price</th>${headCells}</tr></thead>
-      ${rows}
-      <tfoot>
-        ${totalRow("Items", t.subtotal.map(formatMoney), formatMoney(t.itemsTotal))}
-        ${totalRow("Tax", t.tax.map(formatMoney), formatMoney(t.taxTotal))}
-        ${totalRow("Share", t.owes.map(formatMoney), formatMoney(t.total), "total-row")}
-      </tfoot>
-    </table>
-    <div class="footer-bar">
-      <button data-go="3">${icon("left")}Paid</button>
-      <span class="spacer"></span>
-      <button id="start-over" class="link quiet">Start over</button>
-      <button class="primary" id="copy-summary">${icon("copy")}Copy summary</button>
-    </div>`;
   return html;
 }
 
@@ -1319,7 +1345,14 @@ function confirmTwice(button, prompt, label, action) {
 const blankItem = () => ({ id: newId(), name: "", code: "", price: "", taxRate: 0, pct: null });
 
 const clickHandlers = {
-  go: (btn) => goToStep(Number(btn.dataset.go)),
+  go: (btn) => {
+    const step = Number(btn.dataset.go);
+    if (step === 2) {
+      state.cur = 0;
+      split.customFor = null;
+    }
+    goToStep(step);
+  },
 
   retry: async (btn) => {
     const photo = photos.find((p) => p.id == btn.dataset.retry);
@@ -1454,13 +1487,14 @@ const clickById = {
   },
 
   "copy-summary": async (btn) => {
+    const original = btn.innerHTML;
     try {
       await navigator.clipboard.writeText(summaryText());
-      btn.innerHTML = `${icon("check")}Copied`;
+      btn.innerHTML = icon("check", 20);
     } catch {
-      btn.textContent = "Copy blocked";
+      btn.innerHTML = icon("alert", 20);
     }
-    setTimeout(() => (btn.innerHTML = `${icon("copy")}Copy summary`), 1500);
+    setTimeout(() => (btn.innerHTML = original), 1500);
   },
 };
 
