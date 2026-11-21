@@ -92,7 +92,7 @@ body {
   min-height: 100vh;
   min-height: 100dvh;
   margin: 0 auto;
-  padding: 16px 20px 0;
+  padding: 16px 20px calc(96px + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
 }
@@ -470,6 +470,23 @@ input[type="number"]::-webkit-outer-spin-button {
   margin: 0 4px 16px;
 }
 
+.notice.in-receipt {
+  margin: 4px 0 12px;
+  padding: 10px 12px;
+  align-items: center;
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  border-radius: 12px;
+}
+
+.notice.in-receipt .link {
+  color: var(--warning);
+  font-weight: 700;
+}
+
+.notice.in-receipt .icon {
+  margin-top: 0;
+}
+
 .notice .icon {
   margin-top: 2px;
 }
@@ -532,11 +549,16 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 .footer-bar {
-  position: sticky;
+  position: fixed;
   bottom: 0;
-  margin: auto -20px 0;
-  padding: 12px 20px calc(12px + env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100%;
+  max-width: 560px;
+  padding: 14px 20px calc(14px + env(safe-area-inset-bottom));
   background: var(--surface);
+  border-radius: 24px 24px 0 0;
+  box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.18);
   display: flex;
   flex-direction: row;
   gap: 12px;
@@ -708,14 +730,19 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 .receipt-header {
-  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 0 0 8px;
-  margin-bottom: 0;
+}
+
+.header-spacer {
+  flex: none;
+  width: 32px;
 }
 
 .receipt-header input {
-  display: block;
-  width: 100%;
+  flex: 1;
   min-width: 0;
   height: 40px;
   text-align: center;
@@ -725,7 +752,7 @@ input[type="number"]::-webkit-outer-spin-button {
   background: transparent;
   border-color: transparent;
   border-radius: 12px;
-  padding: 0 44px;
+  padding: 0 8px;
 }
 
 .receipt-header input:hover {
@@ -737,9 +764,7 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 .receipt-header .remove-receipt {
-  position: absolute;
-  top: 4px;
-  right: 4px;
+  flex: none;
   width: 32px;
   height: 32px;
   padding: 0;
@@ -758,25 +783,25 @@ input[type="number"]::-webkit-outer-spin-button {
   color: var(--negative);
 }
 
-.receipt-header .add-item-btn {
-  position: absolute;
-  top: 4px;
-  left: 4px;
-  width: 32px;
-  height: 32px;
-  padding: 0;
+button.add-item {
+  width: 100%;
+  height: 36px;
+  margin-top: 0;
   border: none;
-  background: none;
-  color: var(--text-faint);
-}
-
-.receipt-header .add-item-btn:hover:not(:disabled) {
+  border-radius: 12px;
   background: none;
   color: var(--accent-text);
+  font-weight: 600;
+  justify-content: flex-start;
+  padding: 0 0 0 4px;
+}
+
+button.add-item:hover:not(:disabled) {
+  background: var(--accent-tint);
 }
 
 .receipt-footer {
-  padding-top: 14px;
+  padding-top: 10px;
   font-size: 14px;
 }
 
@@ -840,13 +865,14 @@ input[type="number"]::-webkit-outer-spin-button {
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr) 92px 28px;
   column-gap: 8px;
-  row-gap: 2px;
+  row-gap: 4px;
   align-items: center;
-  padding: 10px 0;
+  padding: 12px 0;
   border-bottom: 1px solid var(--border);
 }
 
-.item:has(+ .receipt-footer) {
+.item:has(+ .add-item) {
+  padding-bottom: 2px;
   border-bottom: none;
 }
 
@@ -920,7 +946,7 @@ input[type="number"]::-webkit-outer-spin-button {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding-left: 10px;
+  padding-left: 12px;
   color: var(--text-faint);
   min-width: 0;
 }
@@ -951,12 +977,13 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 .tax-chip {
-  grid-column: 3 / 5;
+  grid-column: 3;
   justify-self: end;
   height: 24px;
   padding: 0 10px;
   white-space: nowrap;
   border: none;
+  border-radius: 999px;
   background: none;
   color: var(--text-faint);
   font-size: 12px;
@@ -1896,12 +1923,10 @@ input[type="number"]::-webkit-outer-spin-button {
 
 @media (max-width: 640px) {
   .page {
-    padding: 12px 16px 0;
+    padding: 12px 16px calc(96px + env(safe-area-inset-bottom));
   }
 
   .footer-bar {
-    margin-left: -16px;
-    margin-right: -16px;
     padding-left: 16px;
     padding-right: 16px;
   }

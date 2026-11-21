@@ -873,7 +873,9 @@ function receiptFooter(receipt) {
   const printedSubtotal = receipt.subtotal == null ? null : Math.round(receipt.subtotal * 100);
   const printedTax = receipt.tax == null ? null : toCents(receipt.tax);
 
-  return `<div class="total-lines">
+  const missing = receipt.items.filter(isIncomplete).length;
+
+  return `${missing ? `<p class="notice in-receipt">${gateHtml(missing)}</p>` : ""}<div class="total-lines">
       ${line("Subtotal", subtotal, printedSubtotal)}
       ${line("Tax", tax, printedTax, " tax")}
       ${line("Total", subtotal + tax, null, " sum")}
@@ -942,17 +944,33 @@ function itemRowHtml(item) {
 function receiptHtml(receipt) {
   return `<div class="receipt-wrap"><div class="receipt" data-receipt="${receipt.id}">
     <div class="receipt-header">
-      <button class="header-icon add-item-btn" data-add-item="${receipt.id}" aria-label="Add item" title="Add item">${icon("plus", 18)}</button>
+      <span class="header-spacer" aria-hidden="true"></span>
       <input data-receipt-name value="${escapeHtml(receipt.name)}" aria-label="Store">
       <button class="remove-receipt" data-remove-receipt="${receipt.id}" aria-label="Remove receipt" title="Remove receipt">${icon("trash", 18)}</button>
     </div>
     ${receipt.items.map(itemRowHtml).join("")}
+    <button class="add-item" data-add-item="${receipt.id}">${icon("plus", 16)}Add item</button>
     <div class="receipt-footer" id="receipt-footer-${receipt.id}">${receiptFooter(receipt)}</div>
   </div></div>`;
 }
 
+const isIncomplete = (item) => !String(item.name || "").trim() || !(toNumber(item.price) > 0);
+const incompleteItems = () => allItems().filter(isIncomplete);
+
+function gateHtml(count) {
+  return count
+    ? `${icon("alert")}<span>${plural(count, "item")} still ${count === 1 ? "needs" : "need"} a name and price</span><button class="link" data-first-incomplete>Find</button>`
+    : "";
+}
+
+function updateSplitGate() {
+  const button = byId("split-btn");
+  if (button) button.disabled = incompleteItems().length > 0 || !allItems().length;
+}
+
 function receiptsView() {
   const itemCount = allItems().length;
+  const incompleteCount = incompleteItems().length;
   const unread = photos.filter((p) => p.status === "new" || p.status === "error").length;
 
   let html = "";
@@ -971,7 +989,7 @@ function receiptsView() {
   html += `<p class="small muted center">No photo? <button class="link" id="add-manual">Enter a receipt by hand</button></p>`;
   html += `<div class="footer-bar">
     ${state.receipts.length ? '<button class="start-over-btn" id="start-over">Start over</button>' : ""}
-    <button class="primary" data-go="2" ${itemCount ? "" : "disabled"}>Split ${plural(itemCount, "item")}</button>
+    <button class="primary" id="split-btn" data-go="2" ${itemCount && !incompleteCount ? "" : "disabled"}>Split ${plural(itemCount, "item")}</button>
   </div>`;
   return html;
 }
@@ -1353,8 +1371,19 @@ function confirmTwice(button, prompt, label, action) {
 const blankItem = () => ({ id: newId(), name: "", code: "", price: "", taxRate: 0, pct: null });
 
 const clickHandlers = {
+  firstIncomplete: () => {
+    const first = allItems().find(isIncomplete);
+    if (!first) return;
+    const row = document.querySelector(`[data-item="${first.id}"]`);
+    const field = String(first.name || "").trim() ? "price" : "name";
+    const input = row?.querySelector(`[data-field="${field}"]`);
+    input?.scrollIntoView({ block: "center", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+    input?.focus({ preventScroll: true });
+  },
+
   go: (btn) => {
     const step = Number(btn.dataset.go);
+    if (step === 2 && incompleteItems().length) return;
     if (step === 2) {
       const firstOpen = allItems().findIndex((item) => !item.pct);
       state.cur = Math.max(0, firstOpen);
@@ -1588,6 +1617,7 @@ document.addEventListener("input", (event) => {
     } else {
       item[data.field] = el.value;
       byId(`receipt-footer-${receipt.id}`).innerHTML = receiptFooter(receipt);
+      updateSplitGate();
     }
     saveState();
     return;
